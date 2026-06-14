@@ -39,5 +39,9 @@ jobs:
         git config --local user.email "github-actions[bot]@users.noreply.github.com"
         git config --local user.name "github-actions[bot]"
         git add --ignore-errors episodes.json feed.xml *.mp3
-        git diff --cached --quiet && echo "No changes to commit" || git commit -m "Automated Morning Podcast Release: $(date +'%Y-%m-%d')"
-        git diff --cached --quiet || git push origin main
+        if git diff --cached --quiet; then
+          echo "No changes to commit"
+        else
+          git commit -m "Automated Morning Podcast Release: $(date +'%Y-%m-%d')"
+          git push origin main
+        fi
