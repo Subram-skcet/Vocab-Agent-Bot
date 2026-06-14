@@ -32,9 +32,10 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
 
 def run_health_check_server():
     """Binds to the port provided by Render to keep the service healthy."""
-    port = int(os.environ.get("PORT", 8080))
+    # Render passes the port dynamically via env, default to 10000 per Render specification
+    port = int(os.environ.get("PORT", 10000))
     server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
-    print(f"🌍 Internal health server listening on port {port}...")
+    print(f"🌍 Internal health server cleanly bound and listening on port {port}...", flush=True)
     server.serve_forever()
 # =====================================================================
 
@@ -121,9 +122,9 @@ def handle_plain_text(message):
         bot.reply_to(message, "❌ Something went wrong saving this word to Notion.")
 
 if __name__ == "__main__":
-    # 1. Start the web server in a daemon thread so it doesn't block the bot
-    threading.Thread(target=run_health_check_server, daemon=True).start()
+    # 1. Start the Telegram Bot loop in a background daemon thread
+    print("🚀 Starting Vocabulary Telegram Bot background polling thread...", flush=True)
+    threading.Thread(target=bot.infinity_polling, daemon=True).start()
     
-    # 2. Run the main loop for Telegram
-    print("🚀 Vocabulary Telegram Bot is up and listening...")
-    bot.infinity_polling()
+    # 2. Run the web server on the MAIN thread to hold the execution open and bind the port instantly
+    run_health_check_server()
