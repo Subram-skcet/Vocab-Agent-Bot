@@ -304,7 +304,7 @@ def generate_rss_feed(new_mp3_name, script_text):
 
     # 2. Add today's episode metadata
     today_str = datetime.date.today().isoformat()
-    rfc_date = email.utils.formatdate(time.time(), rfc2822=True)
+    rfc_date = email.utils.formatdate(time.time(), usegmt=True)
     
     # Clean up script text for XML safety
     clean_summary = script_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
