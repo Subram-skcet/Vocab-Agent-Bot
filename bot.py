@@ -1,5 +1,7 @@
 import os
 import datetime
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from dotenv import load_dotenv
 import telebot
 import requests
@@ -13,6 +15,29 @@ DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
+# =====================================================================
+# 🌍 LIGHTWEIGHT WEB SERVER FOR CLOUD DEPLOYMENT (RENDER)
+# =====================================================================
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        """Responds to Render's health checks and anti-sleep pings."""
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"Vocabulary Bot is alive and polling!")
+
+    def log_message(self, format, *args):
+        """Overrides and suppresses standard console logging to keep logs clean."""
+        return
+
+def run_health_check_server():
+    """Binds to the port provided by Render to keep the service healthy."""
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    print(f"🌍 Internal health server listening on port {port}...")
+    server.serve_forever()
+# =====================================================================
+
 def add_to_notion(term: str, term_type: str):
     """Sends a structured POST request to the Notion API to insert a new row."""
     url = "https://api.notion.com/v1/pages"
@@ -23,10 +48,8 @@ def add_to_notion(term: str, term_type: str):
         "Notion-Version": "2022-06-28"
     }
     
-    # Get today's date in YYYY-MM-DD format
     today = datetime.date.today().isoformat()
     
-    # Construct the JSON payload mapping to the Notion column names
     payload = {
         "parent": { "database_id": DATABASE_ID },
         "properties": {
@@ -55,7 +78,6 @@ def add_to_notion(term: str, term_type: str):
 
 def process_term(message, term_type):
     """Helper function to extract text and trigger Notion insertion."""
-    # Strip out the command prefix (e.g., '/word ubiquitous' -> 'ubiquitous')
     term = message.text.split(' ', 1)[1].strip() if ' ' in message.text else ""
     
     if not term:
@@ -99,5 +121,9 @@ def handle_plain_text(message):
         bot.reply_to(message, "❌ Something went wrong saving this word to Notion.")
 
 if __name__ == "__main__":
+    # 1. Start the web server in a daemon thread so it doesn't block the bot
+    threading.Thread(target=run_health_check_server, daemon=True).start()
+    
+    # 2. Run the main loop for Telegram
     print("🚀 Vocabulary Telegram Bot is up and listening...")
     bot.infinity_polling()
