@@ -321,8 +321,7 @@ def generate_rss_feed(new_mp3_name, script_text):
             json.dump(episodes, f, indent=4)
 
     # 3. Build the XML Feed String from scratch
-    # Replace 'YOUR_GITHUB_USERNAME' with your actual GitHub account name below!
-    github_user = "YOUR_GITHUB_USERNAME" 
+    github_user = "Subram-skcet" 
     base_url = f"https://{github_user}.github.io/Vocab-Agent-Bot"
 
     xml_content = f"""<?xml version="1.0" encoding="UTF-8"?>

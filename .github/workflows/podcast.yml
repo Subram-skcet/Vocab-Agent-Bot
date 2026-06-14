@@ -20,7 +20,7 @@ jobs:
     - name: Set up Python Runtime
       uses: actions/setup-python@v5
       with:
-        python-node: '3.12' # Stable enterprise action runner target
+        python-version: '3.12' # Stable enterprise action runner target
 
     - name: Install Project Dependencies
       run: |
@@ -38,6 +38,6 @@ jobs:
       run: |
         git config --local user.email "github-actions[bot]@users.noreply.github.com"
         git config --local user.name "github-actions[bot]"
-        git add episodes.json feed.xml *.mp3
-        git commit -m "Automated Morning Podcast Release: $(date +'%Y-%m-%d')" || echo "No changes to commit"
-        git push origin main
+        git add --ignore-errors episodes.json feed.xml *.mp3
+        git diff --cached --quiet && echo "No changes to commit" || git commit -m "Automated Morning Podcast Release: $(date +'%Y-%m-%d')"
+        git diff --cached --quiet || git push origin main
