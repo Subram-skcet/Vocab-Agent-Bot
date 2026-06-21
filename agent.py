@@ -6,17 +6,20 @@ import json
 import email.utils
 import requests
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
+from openai import OpenAI
 import edge_tts
 
 # Load environment variables
 load_dotenv()
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# Initialize the modern Gemini client
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+# Initialize the OpenAI client for podcast script generation.
+if not OPENAI_API_KEY:
+    raise ValueError("OPENAI_API_KEY is missing. Add it to .env or your deployment environment.")
+
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 # Spaced Repetition Schedule (Review Stage -> Days to add for next review)
 INTERVALS = {
@@ -37,7 +40,7 @@ NOTION_HEADERS = {
 MAX_RETRIES = 5
 RETRY_DELAY_SECONDS = 3
 REQUEST_TIMEOUT_SECONDS = 30
-NEW_WORD_DAILY_LIMIT = 10
+NEW_WORD_DAILY_LIMIT = 5
 
 def run_with_retries(operation_name, action):
     """Runs a sync operation with retries for transient external-service failures."""
@@ -193,9 +196,9 @@ def update_notion_word(page_id, current_stage, current_count):
     send_notion_request("patch", url, "Updating Notion review state", json=payload)
 
 def generate_podcast_script(vocab_items):
-    """Sends the daily vocab list to Gemini to write an optimized SSML podcast script."""
+    """Sends the daily vocab list to model to write an optimized podcast script."""
     
-    # Format the data cleanly so Gemini can interpret the JSON structure easily
+    # Format the data cleanly so the model can interpret the JSON structure easily.
     formatted_list = [{"term": item["term"], "type": item["type"], "stage": item["stage"]} for item in vocab_items]
     
     system_instruction = """
@@ -206,10 +209,15 @@ def generate_podcast_script(vocab_items):
     Output rules:
     - Output only the final script text.
     - Do not use markdown, bullet points, numbered lists, XML, SSML tags, section labels, or code fences.
-    - Do not mention JSON, Notion, Gemini, stages, or internal rules.
+    - Do not mention JSON, Notion, OpenAI, GPT, stages, or internal rules.
     - Do not invent extra vocabulary items. Teach only the terms provided.
     - Keep the tone warm, direct, and conversational, as if speaking to one learner.
     - Keep explanations short enough for audio, but useful enough to remember.
+    - Keep each item concise enough for audio: avoid long dictionary-style explanations.
+    - For each item, include one common usage note: formality, common mistake, or when not to use it.
+    - For Word items, include 1 or 2 common collocations.
+    - At the end, ask one quick mixed recall question using 2 or 3 terms from today.
+    - Use simple learner-friendly English unless the term itself requires advanced explanation.
 
     Content rules by item type:
     - Word: Do not give a pronunciation guide. Start with the base word and a plain English root meaning. Then explore its word family. Include the base word plus only the most common related forms that a learner is likely to hear or use in everyday English. Skip rare, archaic, highly technical, awkward, or forced derivatives. For each selected form, clearly state its part of speech, such as noun, verb, adjective, adverb, gerund, or phrase. Explain that form briefly and give exactly two short, natural sample sentences for it. Include one memory cue for the base or root meaning only. Do not add a separate memory cue for every family member.
@@ -252,27 +260,24 @@ def generate_podcast_script(vocab_items):
     - Use only plain text with standard punctuation.
     """
 
-    print("🤖 Invoking Gemini to draft the daily audio script...")
+    print("🤖 Invoking GPT-5.5 to draft the daily audio script...")
     
-    # The modern SDK handles configuration parameters via a specific configuration object
     def generate_once():
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=str(formatted_list),
-            config=types.GenerateContentConfig(
-                system_instruction=system_instruction
-            )
+        response = client.responses.create(
+            model="gpt-5.5",
+            instructions=system_instruction,
+            input=json.dumps(formatted_list, ensure_ascii=False)
         )
-        if not response.text:
-            raise ValueError("Gemini returned an empty script.")
-        return response
+        if not response.output_text:
+            raise ValueError("OpenAI returned an empty script.")
+        return response.output_text.strip()
     
-    response = run_with_retries("Generating podcast script with Gemini", generate_once)
+    script_text = run_with_retries("Generating podcast script", generate_once)
     
-    return response.text
+    return script_text
 
 async def convert_text_to_mp3(ssml_script, output_filename="podcast.mp3"):
-    """Uses edge-tts to transform Gemini's SSML script into a high-quality human MP3 voice."""
+    """Uses edge-tts to transform the generated script into a high-quality human MP3 voice."""
     print("🎙️ Synthesizing human speech audio track...")
     
     # We use a natural neural voice. We can change this to 'en-GB-SoniaNeural' or any Microsoft Edge voice.
@@ -331,8 +336,8 @@ def generate_rss_feed(new_mp3_name, script_text):
     <link>{base_url}</link>
     <language>en-us</language>
     <itunes:author>Vocab Agent</itunes:author>
-    <description>Custom personalized daily spaced repetition audio lessons generated by Gemini.</description>
-    <itunes:summary>Custom personalized daily spaced repetition audio lessons generated by Gemini.</itunes:summary>
+    <description>Custom personalized daily spaced repetition audio lessons</description>
+    <itunes:summary>Custom personalized daily spaced repetition audio lessons.</itunes:summary>
     <itunes:explicit>no</itunes:explicit>
     <itunes:category text="Education"/>
     <itunes:image href="https://picsum.photos/3000/3000"/>
@@ -372,10 +377,10 @@ async def main():
         print("No words selected for today's episode.")
         return
     
-    # 2. Ask Gemini to write the script
+    # 2. Ask model to write the script
     ssml_script = generate_podcast_script(selected_vocab_items)
     
-    # Clean up any accidental markdown formatting if Gemini included it
+    # Clean up any accidental markdown formatting if the model included it
     ssml_script = ssml_script.replace("```xml", "").replace("```", "").strip()
     
     # 3. Convert script text to an audio file

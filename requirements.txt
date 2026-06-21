@@ -1,5 +1,5 @@
 python-dotenv
 requests
-google-genai
+openai
 edge-tts
 pyTelegramBotAPI
