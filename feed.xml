@@ -5,12 +5,23 @@
     <link>https://Subram-skcet.github.io/Vocab-Agent-Bot</link>
     <language>en-us</language>
     <itunes:author>Vocab Agent</itunes:author>
-    <description>Custom personalized daily spaced repetition audio lessons.</description>
+    <description>Custom personalized daily spaced repetition audio lessons</description>
     <itunes:summary>Custom personalized daily spaced repetition audio lessons.</itunes:summary>
     <itunes:explicit>no</itunes:explicit>
     <itunes:category text="Education"/>
     <itunes:image href="https://picsum.photos/3000/3000"/>
     
+    <item>
+      <title>Daily Vocab Lesson: 2026-06-22</title>
+      <description>Today we have three terms: imminent, red herring, and perpetually.
+
+First, can you recall what imminent means? ... ... ... ... Imminent means very close to happening, usually something important or serious. The root idea is hanging over you, like an event about to arrive.
+
+Imminent (adjective) means...</description>
+      <pubDate>Mon, 22 Jun 2026 04:49:18 GMT</pubDate>
+      <guid isPermaLink="true">https://Subram-skcet.github.io/Vocab-Agent-Bot/vocab_2026-06-22.mp3</guid>
+      <enclosure url="https://Subram-skcet.github.io/Vocab-Agent-Bot/vocab_2026-06-22.mp3" type="audio/mpeg" length="1024000"/>
+    </item>
     <item>
       <title>Daily Vocab Lesson: 2026-06-21</title>
       <description>Today, we are learning seven terms: Regime, ensuing, belated, dispel, Imminent, red herring, and perpetually.
