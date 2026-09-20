@@ -258,11 +258,11 @@ def generate_podcast_script(vocab_items):
     - Use only plain text with standard punctuation.
     """
 
-    print("🤖 Invoking GPT-5.5 to draft the daily audio script...")
+    print("🤖 Invoking GPT-5.1 to draft the daily audio script...")
     
     def generate_once():
         response = client.responses.create(
-            model="gpt-5.5",
+            model="gpt-5.1",
             instructions=system_instruction,
             input=json.dumps(formatted_list, ensure_ascii=False)
         )
