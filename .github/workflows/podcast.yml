@@ -27,11 +27,21 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
+    - name: Set up Node Runtime
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+
+    # The script is written by Claude Code running headless. It authenticates with the
+    # subscription OAuth token below, so this job spends no Claude API credit.
+    - name: Install Claude Code
+      run: npm install -g @anthropic-ai/claude-code
+
     - name: Run Core Agent Generation Engine
       env:
         NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
         NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
-        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       run: python agent.py
 
     - name: Commit and Save Generated MP3 and Feed updates

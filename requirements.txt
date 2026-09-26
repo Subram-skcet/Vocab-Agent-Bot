@@ -1,5 +1,4 @@
 python-dotenv
 requests
-openai
 edge-tts
 pyTelegramBotAPI

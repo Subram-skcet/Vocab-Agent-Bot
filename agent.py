@@ -1,25 +1,37 @@
 import os
+import sys
 import datetime
 import asyncio
+import shutil
+import subprocess
 import time
 import json
 import email.utils
+from pathlib import Path
+
 import requests
 from dotenv import load_dotenv
-from openai import OpenAI
 import edge_tts
+
+# This file is UTF-8 and full of emoji. The Windows console is cp1252, so soften
+# stdout rather than letting an unprintable character abort a finished run.
+sys.stdout.reconfigure(errors="replace")
 
 # Load environment variables
 load_dotenv()
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# Initialize the OpenAI client for podcast script generation.
-if not OPENAI_API_KEY:
-    raise ValueError("OPENAI_API_KEY is missing. Add it to .env or your deployment environment.")
-
-client = OpenAI(api_key=OPENAI_API_KEY)
+# The script is written by Claude Code running headless, which bills against the Claude
+# subscription instead of an API key. Claude Code resolves its own credentials, so a
+# missing token here is a warning rather than a failure: an interactive login on a
+# developer machine is equally valid. In CI there is no other credential, so an absent
+# token surfaces as a failed generation a few seconds later, which is loud enough.
+if not os.getenv("CLAUDE_CODE_OAUTH_TOKEN"):
+    print(
+        "[auth] CLAUDE_CODE_OAUTH_TOKEN is not set. Falling back to whatever credential "
+        "Claude Code finds. Generate a token with 'claude setup-token' if this is CI."
+    )
 
 # Spaced Repetition Schedule (Review Stage -> Days to add for next review)
 INTERVALS = {
@@ -195,84 +207,175 @@ def update_notion_word(page_id, current_stage, current_count):
     
     send_notion_request("patch", url, "Updating Notion review state", json=payload)
 
-def generate_podcast_script(vocab_items):
-    """Sends the daily vocab list to model to write an optimized podcast script."""
-    
-    # Format the data cleanly so the model can interpret the JSON structure easily.
-    formatted_list = [{"term": item["term"], "type": item["type"], "stage": item["stage"]} for item in vocab_items]
-    
-    system_instruction = """
-    You are an expert, friendly English language teacher and audio scriptwriter.
-    I will provide a JSON list of vocabulary items with term, type, and stage.
-    Write one cohesive, natural spoken lesson for a daily vocabulary podcast.
+CLAUDE_MODEL = "claude-opus-5"
+SYSTEM_PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "vocab_system.md"
+CLAUDE_TIMEOUT_SECONDS = 900
 
-    Output rules:
-    - Output only the final script text.
-    - Do not use markdown, bullet points, numbered lists, XML, SSML tags, section labels, or code fences.
-    - Do not mention JSON, Notion, OpenAI, GPT, stages, or internal rules.
-    - Do not invent extra vocabulary items. Teach only the terms provided.
-    - Keep the tone warm, direct, and conversational, as if speaking to one learner.
-    - For each item, include one common usage note: formality, common mistake, or when not to use it.
-    - For Word items, include 1 or 2 common collocations.
-    - At the end, ask one quick mixed recall question using 2 or 3 terms from today.
-    - Use simple learner-friendly English unless the term itself requires advanced explanation.
+# Claude Code's own system prompt describes a coding agent. This overrides that framing
+# without repeating the brief, which is far too long to pass as a command line argument.
+SYSTEM_PROMPT_SUFFIX = (
+    "You are writing a spoken podcast script, not doing software work. "
+    "Do not use any tools, do not read or write files, and do not explain yourself. "
+    "Reply with the finished script text and nothing else."
+)
 
-    Content rules by item type:
-    - Word: Do not give a pronunciation guide. Start with the base word and a plain English root meaning. Then explore its word family. Include the base word plus only the most common related forms that a learner is likely to hear or use in everyday English. Skip rare, archaic, highly technical, awkward, or forced derivatives. For each selected form, clearly state its part of speech, such as noun, verb, adjective, adverb, gerund, or phrase. Explain that form clearly and give exactly two short, natural sample sentences for it. Include one memory cue for the base or root meaning only. Do not add a separate memory cue for every family member.
-    - Phrasal Verb: If it has multiple meanings, include only the most common meanings. For each common meaning, explain the meaning, give one or two realistic situations where someone would use it, and include natural example sentences. Add one memory cue based on the literal image, verb plus particle logic, origin, or meaning pattern.
-    - Idiom: Explain the literal visual image first, then the real meaning. Give one natural example sentence. Add one memory cue based on the image, origin, or meaning logic.
-    - Phrase: Explain what the phrase means and when someone would say it. Give exactly three real world examples. Add one memory cue based on the literal meaning, origin, word parts, or situation where the phrase naturally fits.
+# A finished lesson for even a single word runs well past this. The floor exists to catch
+# a refusal or an error string, both of which are short.
+MIN_SCRIPT_WORDS = 150
 
-    Memory cue rules:
-    - Every vocabulary item needs a quick memory cue, except that Word items need only one cue for the base or root meaning.
-    - Memory cues must explain why the expression means what it means.
-    - Prefer origin, literal image, word dissection, root meaning, or meaning logic.
-    - Do not tell the learner to memorize by repetition, mugging up, or brute force.
-    - Example of a good cue: monotonous comes from mono and tone, so it suggests one unchanged tone, which helps you connect it with something boring because it does not vary.
+# Phrases that mean the run failed rather than taught anything. Deliberately specific:
+# a plain word like "error" would fire on a legitimate lesson about the word error.
+FAILURE_MARKERS = (
+    "invalid api key",
+    "authentication_failed",
+    "please run /login",
+    "login expired",
+    "credit balance",
+    "rate_limit",
+    "oauth token",
+    "claude code",
+)
 
-    Review and new learning rules:
-    - Items with stage greater than 0 are review items.
-    - For each review item, ask the learner to recall the meaning before explaining it again.
-    - After a recall question, insert exactly this pause: ... ... ... ...
-    - Then give a concise reminder that still follows the item specific rules above.
-    - Items with stage 0 are new items.
-    - For new items, teach the meaning clearly first, then examples, then the memory cue.
 
-    Audio pacing rules:
-    - Use normal commas and periods for natural breathing.
-    - Use a single ellipsis (...) only when a short pause improves the spoken rhythm.
-    - Use exactly four spaced ellipses (... ... ... ...) only for recall pauses.
-    - Avoid long, complex sentences. Prefer clear spoken sentences.
-    - Do not overuse dramatic pauses.
+def claude_executable():
+    """Locates the Claude Code CLI, which npm installs as claude.cmd on Windows."""
+    for candidate in ("claude", "claude.cmd", "claude.exe"):
+        resolved = shutil.which(candidate)
+        if resolved:
+            return resolved
 
-    Script structure:
-    - Start with one brief sentence that says how many terms are in today's lesson and names them.
-    - Teach all review items first, if any.
-    - Then teach all new items, if any.
-    - End with one short outro sentence saying today's session is complete.
+    raise FileNotFoundError(
+        "Claude Code CLI not found on PATH. Install it with: "
+        "npm install -g @anthropic-ai/claude-code"
+    )
 
-    Formatting restrictions:
-    - Avoid special symbols that sound awkward in text to speech.
-    - Do not use hyphens, forward slashes, backward slashes, asterisks, hashtags, square brackets, or emojis.
-    - Parentheses are allowed only for part of speech labels or word part explanations.
-    - Use only plain text with standard punctuation.
+
+def parse_claude_result(raw_stdout):
+    """Pulls the script out of the --output-format json envelope.
+
+    Claude Code reports some in-run failures, a missing credential among them, as an
+    ordinary result on stdout instead of a non-zero exit. Checking is_error here is what
+    stops an authentication error being narrated into tomorrow's episode.
     """
+    try:
+        envelope = json.loads(raw_stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(
+            f"Claude Code did not return JSON. First 500 characters: {raw_stdout[:500]}"
+        ) from error
 
-    print("🤖 Invoking GPT-5.1 to draft the daily audio script...")
-    
-    def generate_once():
-        response = client.responses.create(
-            model="gpt-5.1",
-            instructions=system_instruction,
-            input=json.dumps(formatted_list, ensure_ascii=False)
+    if envelope.get("is_error"):
+        raise RuntimeError(
+            f"Claude Code returned an error result: {str(envelope.get('result'))[:500]}"
         )
-        if not response.output_text:
-            raise ValueError("OpenAI returned an empty script.")
-        return response.output_text.strip()
-    
-    script_text = run_with_retries("Generating podcast script", generate_once)
-    
+
+    script_text = (envelope.get("result") or "").strip()
+    if not script_text:
+        raise RuntimeError("Claude Code returned an empty result.")
+
+    estimated_cost = envelope.get("total_cost_usd")
+    if estimated_cost is not None:
+        print(
+            f"[claude] Equivalent API cost estimate: ${estimated_cost:.4f}. "
+            f"The run itself draws on the subscription, not API credit."
+        )
+
     return script_text
+
+
+def validate_script(script_text, vocab_items):
+    """Refuses to publish anything that does not look like a finished lesson.
+
+    The MP3 and the feed entry are committed without anyone reading them first, so a bad
+    generation is not a failed run, it is a bad episode in a public podcast feed. Every
+    check here is a hard failure, which leaves Notion untouched and the words still due.
+    """
+    problems = []
+
+    word_count = len(script_text.split())
+    if word_count < MIN_SCRIPT_WORDS:
+        problems.append(f"only {word_count} words, expected at least {MIN_SCRIPT_WORDS}")
+
+    lowered = script_text.lower()
+    taught_terms = {item["term"].lower() for item in vocab_items}
+    for marker in FAILURE_MARKERS:
+        # Skip a marker that is genuinely one of today's terms, however unlikely.
+        if marker in lowered and marker not in taught_terms:
+            problems.append(f"contains the failure marker {marker!r}")
+
+    missing_terms = [
+        item["term"] for item in vocab_items
+        if item["term"].lower().split()[0] not in lowered
+    ]
+    if missing_terms:
+        problems.append(f"never mentions: {', '.join(missing_terms)}")
+
+    if problems:
+        raise ValueError("Generated script failed validation: " + "; ".join(problems))
+
+    print(
+        f"[validate] Script accepted: {word_count} words, "
+        f"all {len(vocab_items)} terms present."
+    )
+
+
+def generate_podcast_script(vocab_items):
+    """Sends the daily vocab list to Claude Code to write an optimized podcast script."""
+
+    # Format the data cleanly so the model can interpret the JSON structure easily.
+    formatted_list = [
+        {"term": item["term"], "type": item["type"], "stage": item["stage"]}
+        for item in vocab_items
+    ]
+
+    if not SYSTEM_PROMPT_PATH.exists():
+        raise FileNotFoundError(
+            f"{SYSTEM_PROMPT_PATH} is missing. It holds the lesson brief that used to "
+            f"live inside this file."
+        )
+
+    # The brief travels on stdin, not as an argument. There is no --append-system-prompt-file
+    # flag, and the brief is over 4KB, which on Windows routes through cmd.exe and its 8191
+    # character command line limit. Piping sidesteps that and behaves the same on the runner.
+    # The short suffix below is what keeps Claude Code's coding-agent framing from adding a
+    # preamble. dontAsk plus --permission-prompts none means a scheduled run can never block
+    # waiting for an approval nobody is there to give.
+    command = [
+        claude_executable(),
+        "-p", "Write today's episode from the brief and vocabulary list that follow.",
+        "--model", CLAUDE_MODEL,
+        "--append-system-prompt", SYSTEM_PROMPT_SUFFIX,
+        "--permission-mode", "dontAsk",
+        "--permission-prompts", "none",
+        "--output-format", "json",
+    ]
+
+    piped_input = (
+        SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
+        + "\n\nToday's vocabulary list:\n"
+        + json.dumps(formatted_list, ensure_ascii=False)
+    )
+
+    print(f"🤖 Invoking {CLAUDE_MODEL} through Claude Code to draft the daily audio script...")
+
+    def generate_once():
+        completed = subprocess.run(
+            command,
+            input=piped_input,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=CLAUDE_TIMEOUT_SECONDS,
+        )
+        if completed.returncode != 0:
+            detail = completed.stderr.strip() or completed.stdout.strip()
+            raise RuntimeError(
+                f"Claude Code exited with {completed.returncode}: {detail[:500]}"
+            )
+        return parse_claude_result(completed.stdout)
+
+    return run_with_retries("Generating podcast script", generate_once)
+
 
 async def convert_text_to_mp3(ssml_script, output_filename="podcast.mp3"):
     """Uses edge-tts to transform the generated script into a high-quality human MP3 voice."""
@@ -380,6 +483,10 @@ async def main():
     
     # Clean up any accidental markdown formatting if the model included it
     ssml_script = ssml_script.replace("```xml", "").replace("```", "").strip()
+    
+    # 2.5 Refuse to publish a bad generation. Everything past this point writes to the
+    # public feed and advances the Notion schedule, and neither is easy to walk back.
+    validate_script(ssml_script, selected_vocab_items)
     
     # 3. Convert script text to an audio file
     mp3_filename = f"vocab_{datetime.date.today().isoformat()}.mp3"
